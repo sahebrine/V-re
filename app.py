@@ -244,5 +244,6 @@ def api_check_key():
 
 # ---------- RUN ----------
 if __name__ == "__main__":
-    # in production run by gunicorn/uvicorn; this is just for local debugging
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)
+    app.run(host="0.0.0.0", port=5000)
+
+
