@@ -1,5 +1,5 @@
 # app_api.py
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from datetime import datetime, timezone, timedelta
@@ -8,10 +8,62 @@ import os
 import secrets
 
 # ---------- CONFIG ----------
+MONGO_URI = os.environ.get(
+    "MONGO_URI",
+    "mongodb+srv://sahebrine_db_user:7XlD1xWNVbFvACFh@cluster0.wemjued.mongodb.net/?retryWrites=true&w=majority"
+)
+DB_NAME = os.environ.get("DB_NAME", "sahebrine_db")
+COL_NAME = os.environ.get("COL_NAME", "vurekeys")
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "change-me-to-secure-token")
+KEY_PREFIX = "VURE"
+
+# ---------- INIT ----------
+app = Flask(__name__)
+client = MongoClient(MONGO_URI, server_api=ServerApi("1"))
+db = client[DB_NAME]
+keys_col = db[COL_NAME]
+
+# ---------- HELPERS ----------
+def now_utc():
+    return datetime.now(timezone.utc)
+
+def iso(dt: datetime):
+    """Return ISO string in UTC for a datetime (aware or naive treated as UTC)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+def parse_iso(s):
+    """Parse ISO datetime string to an aware datetime in UTC."""
+    if isinstance(s, datetime):
+        if s.tzinfo is None:
+            return s.replace(tzinfo=timezone.utc)
+        return s.astimezone(timezone.utc)
+    # Python 3.11+ supports fromisoformat for offsets; ensure timezone aware
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 def remaining_string(expire_at):
-    """تحسب الوقت المتبقي بصيغة واضحة مثل '2d 5h 12m'"""
+    """
+    Accepts expire_at as ISO string or datetime, returns human readable remaining time.
+    Example outputs: '3d 4h 12m' or 'Expired' or 'Unknown'
+    """
     try:
-        remaining = (expire_at - datetime.utcnow()).total_seconds()
+        if not expire_at:
+            return "Unknown"
+        if isinstance(expire_at, str):
+            exp_dt = parse_iso(expire_at)
+        elif isinstance(expire_at, datetime):
+            exp_dt = exp_at = expire_at
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            exp_dt = exp_dt.astimezone(timezone.utc)
+        else:
+            return "Unknown"
+
+        remaining = (exp_dt - now_utc()).total_seconds()
         if remaining <= 0:
             return "Expired"
 
@@ -23,42 +75,22 @@ def remaining_string(expire_at):
         if days: parts.append(f"{days}d")
         if hours: parts.append(f"{hours}h")
         if minutes: parts.append(f"{minutes}m")
-
         return " ".join(parts) if parts else "less than 1m"
     except Exception:
         return "Unknown"
-MONGO_URI = "mongodb+srv://sahebrine_db_user:7XlD1xWNVbFvACFh@cluster0.wemjued.mongodb.net/?retryWrites=true&w=majority"
-COL_NAME = "vurekeys"
-ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "change-me-to-secure-token")
-KEY_PREFIX = "VURE"
-
-# ---------- INIT ----------
-app = Flask(__name__)
-client = MongoClient(MONGO_URI, server_api=ServerApi("1"))
-db = client["sahebrine_db"]
-keys_col = db[COL_NAME]
-
-# ---------- HELPERS ----------
-def now_utc():
-    return datetime.now(timezone.utc)
-
-def iso(dt: datetime):
-    return dt.astimezone(timezone.utc).isoformat()
-
-def parse_iso(s):
-    return datetime.fromisoformat(s).astimezone(timezone.utc)
 
 def cleanup_expired():
-    """حذف المفاتيح التي انتهت صلاحيتها الآن"""
-    cur = now_utc()
-    res = keys_col.delete_many({"expires_at": {"$lte": cur.isoformat()}})
+    """Delete keys that have expiry <= now. Returns number deleted."""
+    cur_iso = iso(now_utc())
+    res = keys_col.delete_many({"expires_at": {"$lte": cur_iso}})
     return res.deleted_count
+
 def require_admin():
     token = request.headers.get("X-Admin-Token") or request.args.get("admin_token")
     return token == ADMIN_TOKEN
 
 def generate_key(duration_str):
-    """duration_str مثال: '1 month' أو '30 day' أو '60 minute'"""
+    """duration_str example: '1 month' or '30 day' or '60 minute'"""
     amount, unit = duration_str.split()
     amount = int(amount)
     unit = unit.lower()
@@ -85,12 +117,12 @@ def api_add_key():
     if not require_admin():
         return jsonify({"ok": False, "msg": "Unauthorized"}), 401
     cleanup_expired()
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     name = data.get("name", "default")
     duration = data.get("duration", "1 month")  # default 1 month
     try:
         key, expires_iso = generate_key(duration)
-    except Exception as e:
+    except Exception:
         return jsonify({"ok": False, "msg": "Invalid duration format"}), 400
 
     doc = {
@@ -102,14 +134,15 @@ def api_add_key():
         "created_at": iso(now_utc())
     }
     keys_col.insert_one(doc)
-    return jsonify({"ok": True, "key": key, "expires_at": expires_iso}), 201
+    remaining = remaining_string(expires_iso)
+    return jsonify({"ok": True, "key": key, "expires_at": expires_iso, "remaining": remaining}), 201
 
 @app.route("/api/delete_key", methods=["POST"])
 def api_delete_key():
     if not require_admin():
         return jsonify({"ok": False, "msg": "Unauthorized"}), 401
     cleanup_expired()
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     key = data.get("key")
     if not key:
         return jsonify({"ok": False, "msg": "Missing key"}), 400
@@ -123,17 +156,17 @@ def api_list_key():
     if not require_admin():
         return jsonify({"ok": False, "msg": "Unauthorized"}), 401
     cleanup_expired()
-    docs = list(keys_col.find({}, {"_id":0}).sort("created_at", -1))
-    # Normalize remaining time & status
+    docs = list(keys_col.find({}, {"_id": 0}).sort("created_at", -1))
     out = []
     for d in docs:
-        rem = remaining_string(d["expires_at"])
-        status = "Active" if rem != "Expired" else "Expired"
-        used = True if d.get("used") else False
+        expires_at = d.get("expires_at")
+        rem = remaining_string(expires_at)
+        status = "Active" if rem != "Expired" and rem != "Unknown" else "Expired"
+        used = bool(d.get("used"))
         out.append({
-            "key": d["key"],
+            "key": d.get("key"),
             "name": d.get("name"),
-            "expires_at": d["expires_at"],
+            "expires_at": expires_at,
             "remaining": rem,
             "status": status,
             "used": used,
@@ -146,7 +179,7 @@ def api_reset_key():
     if not require_admin():
         return jsonify({"ok": False, "msg": "Unauthorized"}), 401
     cleanup_expired()
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     key = data.get("key")
     if not key:
         return jsonify({"ok": False, "msg": "Missing key"}), 400
@@ -155,67 +188,61 @@ def api_reset_key():
         return jsonify({"ok": False, "msg": "Key not found"}), 404
     return jsonify({"ok": True, "msg": "Reset successful"}), 200
 
-def format_remaining_time(seconds):
-    if seconds <= 0:
-        return "Expired"
-    minutes, seconds = divmod(int(seconds), 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    parts = []
-    if days: parts.append(f"{days}d")
-    if hours: parts.append(f"{hours}h")
-    if minutes: parts.append(f"{minutes}m")
-    return " ".join(parts) if parts else "less than 1m"
-
 @app.route("/api/check_key", methods=["POST"])
-def check_key():
-    data = request.get_json(force=True)
-    key = data.get("key")
-    hwid = data.get("hwid")
-    name = data.get("name", "Unknown")
+def api_check_key():
+    cleanup_expired()
+    data = request.get_json(force=True) or {}
+    key = (data.get("key") or "").strip()
+    hwid = (data.get("hwid") or "").strip()
+    name = data.get("name", "").strip() or None
 
     if not key or not hwid:
-        return jsonify({"status": "missing parameters"}), 400
+        return jsonify({"ok": False, "msg": "Missing key or hwid"}), 400
 
-    k = db.keys.find_one({"key": key})
-    if not k:
-        return jsonify({"status": "invalid key"}), 404
+    doc = keys_col.find_one({"key": key})
+    if not doc:
+        return jsonify({"ok": False, "msg": "invalid key"}), 404
 
-    # حساب الوقت المتبقي
-    expire_at = k.get("expire_at")
-    if not expire_at:
-        return jsonify({"status": "invalid key"}), 404
+    expires_at = doc.get("expires_at")
+    if not expires_at:
+        # something wrong with data format — treat as invalid
+        keys_col.delete_one({"key": key})
+        return jsonify({"ok": False, "msg": "invalid key"}), 404
 
-    remaining_seconds = (expire_at - datetime.utcnow()).total_seconds()
+    # compute remaining seconds
+    try:
+        exp_dt = parse_iso(expires_at)
+    except Exception:
+        # invalid format — delete doc and return invalid
+        keys_col.delete_one({"key": key})
+        return jsonify({"ok": False, "msg": "invalid key"}), 404
 
-    # إذا انتهى الوقت، نحذف المفتاح فورًا
+    remaining_seconds = (exp_dt - now_utc()).total_seconds()
     if remaining_seconds <= 0:
-        db.keys.delete_one({"key": key})
-        return jsonify({
-            "status": "invalid key",
-        }), 410
+        # expired: delete immediately
+        keys_col.delete_one({"key": key})
+        return jsonify({"ok": False, "msg": "Key expired", "remaining": "Expired"}), 410
 
-    remaining = format_remaining_time(remaining_seconds)
+    remaining = remaining_string(expires_at)
 
-    # التحقق من الـ HWID
-    stored_hwid = k.get("hwid")
+    stored_hwid = doc.get("hwid")
     if stored_hwid and stored_hwid != hwid:
-        return jsonify({
-            "status": "This key is used by another hwid!",
-        }), 403
+        # used by another hwid -- return remaining too
+        return jsonify({"ok": False, "msg": "This key used by another hwid!", "remaining": remaining}), 403
 
-    # إذا ما كان عنده hwid، نسجله له لأول مرة
+    # if not used before, bind hwid and optionally set name
     if not stored_hwid:
-        db.keys.update_one({"key": key}, {"$set": {
-            "hwid": hwid,
-            "name": name
-        }})
+        update = {"$set": {"hwid": hwid, "used": True}}
+        if name:
+            update["$set"]["name"] = name
+        keys_col.update_one({"key": key}, update)
+        display_name = name or doc.get("name", "Guest")
+    else:
+        display_name = doc.get("name", name) or "Guest"
 
-    # رجع له رسالة الترحيب والمدة المتبقية
-    return jsonify({
-        "status": f"welcome {k.get('name', name)}",
-        "remaining": remaining
-    }), 200
+    return jsonify({"ok": True, "msg": f"welcome {display_name}", "remaining": remaining}), 200
+
 # ---------- RUN ----------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # in production run by gunicorn/uvicorn; this is just for local debugging
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)
