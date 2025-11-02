@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 import os
 import secrets
-
+import certifi
 # ---------- CONFIG ----------
 
 uri = "mongodb+srv://sahebrine_db_user:7XlD1xWNVbFvACFh@cluster0.wemjued.mongodb.net/?retryWrites=true&w=majority"
