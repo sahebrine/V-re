@@ -6,22 +6,10 @@ from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 import os
 import secrets
-import certifi
+
 # ---------- CONFIG ----------
 
-uri = "mongodb+srv://sahebrine_db_user:7XlD1xWNVbFvACFh@cluster0.wemjued.mongodb.net/?retryWrites=true&w=majority"
-client = MongoClient(
-    uri,
-    server_api=ServerApi("1"),
-    tls=True,
-    tlsCAFile=certifi.where()
-)
-try:
-    client.admin.command('ping')
-    print("Pinged your deployment. You successfully connected to MongoDB!")
-except Exception as e:
-    print(e)
-
+MONGO_URI = "mongodb+srv://sahebrine_db_user:7XlD1xWNVbFvACFh@cluster0.wemjued.mongodb.net/?retryWrites=true&w=majority"
 COL_NAME = "vurekeys"
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "change-me-to-secure-token")
 KEY_PREFIX = "VURE"
@@ -43,7 +31,7 @@ def parse_iso(s):
     return datetime.fromisoformat(s).astimezone(timezone.utc)
 
 def cleanup_expired():
-    """حذف المفاتيح التي انتهت صلاحيتها الآن"""
+    """حذف المفاتيح التي انتهت صلاحيتها الآن"""
     cur = now_utc()
     res = keys_col.delete_many({"expires_at": {"$lte": cur.isoformat()}})
     return res.deleted_count
@@ -70,7 +58,7 @@ def require_admin():
     return token == ADMIN_TOKEN
 
 def generate_key(duration_str):
-    """duration_str مثال: '1 month' أو '30 day' أو '60 minute'"""
+    """duration_str مثال: '1 month' أو '30 day' أو '60 minute'"""
     amount, unit = duration_str.split()
     amount = int(amount)
     unit = unit.lower()
