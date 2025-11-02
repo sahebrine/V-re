@@ -8,7 +8,25 @@ import os
 import secrets
 
 # ---------- CONFIG ----------
+def remaining_string(expire_at):
+    """تحسب الوقت المتبقي بصيغة واضحة مثل '2d 5h 12m'"""
+    try:
+        remaining = (expire_at - datetime.utcnow()).total_seconds()
+        if remaining <= 0:
+            return "Expired"
 
+        minutes, seconds = divmod(int(remaining), 60)
+        hours, minutes = divmod(minutes, 60)
+        days, hours = divmod(hours, 24)
+
+        parts = []
+        if days: parts.append(f"{days}d")
+        if hours: parts.append(f"{hours}h")
+        if minutes: parts.append(f"{minutes}m")
+
+        return " ".join(parts) if parts else "less than 1m"
+    except Exception:
+        return "Unknown"
 MONGO_URI = "mongodb+srv://sahebrine_db_user:7XlD1xWNVbFvACFh@cluster0.wemjued.mongodb.net/?retryWrites=true&w=majority"
 COL_NAME = "vurekeys"
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "change-me-to-secure-token")
