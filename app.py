@@ -35,24 +35,6 @@ def cleanup_expired():
     cur = now_utc()
     res = keys_col.delete_many({"expires_at": {"$lte": cur.isoformat()}})
     return res.deleted_count
-
-def remaining_string(expires_iso):
-    try:
-        exp = parse_iso(expires_iso)
-    except Exception:
-        return "Unknown"
-    diff = exp - now_utc()
-    if diff.total_seconds() <= 0:
-        return "Expired"
-    days = diff.days
-    hours = diff.seconds // 3600
-    minutes = (diff.seconds % 3600) // 60
-    if days > 0:
-        return f"{days} days"
-    if hours > 0:
-        return f"{hours} hours"
-    return f"{minutes} minutes"
-
 def require_admin():
     token = request.headers.get("X-Admin-Token") or request.args.get("admin_token")
     return token == ADMIN_TOKEN
@@ -155,44 +137,67 @@ def api_reset_key():
         return jsonify({"ok": False, "msg": "Key not found"}), 404
     return jsonify({"ok": True, "msg": "Reset successful"}), 200
 
+def format_remaining_time(seconds):
+    if seconds <= 0:
+        return "Expired"
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = []
+    if days: parts.append(f"{days}d")
+    if hours: parts.append(f"{hours}h")
+    if minutes: parts.append(f"{minutes}m")
+    return " ".join(parts) if parts else "less than 1m"
+
 @app.route("/api/check_key", methods=["POST"])
-def api_check_key():
-    cleanup_expired()
+def check_key():
     data = request.get_json(force=True)
-    key = (data.get("key") or "").strip()
-    hwid = (data.get("hwid") or "").strip()
-    name = data.get("name", "").strip()
+    key = data.get("key")
+    hwid = data.get("hwid")
+    name = data.get("name", "Unknown")
+
     if not key or not hwid:
-        return jsonify({"ok": False, "msg": "Missing key or hwid"}), 400
+        return jsonify({"status": "missing parameters"}), 400
 
-    doc = keys_col.find_one({"key": key})
-    if not doc:
-        return jsonify({"ok": False, "msg": "invalid key"}, 404)
+    k = db.keys.find_one({"key": key})
+    if not k:
+        return jsonify({"status": "invalid key"}), 404
 
-    # check expiry (in case someone added expiry in past between cleanup)
-    exp = parse_iso(doc["expires_at"])
-    if now_utc() > exp:
-        # delete immediately as requested
-        keys_col.delete_one({"key": key})
-        return jsonify({"ok": False, "msg": "Key expired"}), 410
+    # حساب الوقت المتبقي
+    expire_at = k.get("expire_at")
+    if not expire_at:
+        return jsonify({"status": "invalid key"}), 404
 
-    # not used yet -> bind hwid & name
-    if not doc.get("used"):
-        update = {"$set": {"hwid": hwid, "used": True}}
-        if name:
-            update["$set"]["name"] = name
-        keys_col.update_one({"key": key}, update)
-        rem = remaining_string(doc["expires_at"])
-        return jsonify({"ok": True, "msg": f"welcome {name or doc.get('name','Guest')}\\nRemaining Time: {rem}"}), 200
+    remaining_seconds = (expire_at - datetime.utcnow()).total_seconds()
 
-    # used: check hwid match
-    if doc.get("hwid") == hwid:
-        rem = remaining_string(doc["expires_at"])
-        return jsonify({"ok": True, "msg": f"welcome {doc.get('name','Guest')}\\nRemaining Time: {rem}"}), 200
-    else:
-        rem = remaining_string(doc["expires_at"])
-        return jsonify({"ok": False, "msg": f"This key used by another hwid!\\nRemaining Time: {rem}"}), 403
+    # إذا انتهى الوقت، نحذف المفتاح فورًا
+    if remaining_seconds <= 0:
+        db.keys.delete_one({"key": key})
+        return jsonify({
+            "status": "invalid key",
+        }), 410
 
+    remaining = format_remaining_time(remaining_seconds)
+
+    # التحقق من الـ HWID
+    stored_hwid = k.get("hwid")
+    if stored_hwid and stored_hwid != hwid:
+        return jsonify({
+            "status": "This key is used by another hwid!",
+        }), 403
+
+    # إذا ما كان عنده hwid، نسجله له لأول مرة
+    if not stored_hwid:
+        db.keys.update_one({"key": key}, {"$set": {
+            "hwid": hwid,
+            "name": name
+        }})
+
+    # رجع له رسالة الترحيب والمدة المتبقية
+    return jsonify({
+        "status": f"welcome {k.get('name', name)}",
+        "remaining": remaining
+    }), 200
 # ---------- RUN ----------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
