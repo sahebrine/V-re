@@ -121,21 +121,22 @@ def api_add_key():
     name = data.get("name", "default")
     duration = data.get("duration", "1 month")  # default 1 month
     try:
-        key, expires_iso = generate_key(duration)
+        key, _ = generate_key(duration)
     except Exception:
         return jsonify({"ok": False, "msg": "Invalid duration format"}), 400
 
     doc = {
         "key": key,
         "name": name,
-        "expires_at": expires_iso,
+        "duration": duration,
+        "expires_at": None,
         "hwid": None,
         "used": False,
         "created_at": iso(now_utc())
     }
     keys_col.insert_one(doc)
-    remaining = remaining_string(expires_iso)
-    return jsonify({"ok": True, "key": key, "expires_at": expires_iso, "remaining": remaining}), 201
+    
+    return jsonify({"ok": True, "key": key}), 201
 
 @app.route("/api/delete_key", methods=["POST"])
 def api_delete_key():
@@ -209,28 +210,27 @@ def api_check_key():
         keys_col.delete_one({"key": key})
         return jsonify({"ok": False, "msg": "invalid key"}), 404
 
-    # compute remaining seconds
     try:
         exp_dt = parse_iso(expires_at)
     except Exception:
-        # invalid format — delete doc and return invalid
         keys_col.delete_one({"key": key})
         return jsonify({"ok": False, "msg": "invalid key"}), 404
 
     remaining_seconds = (exp_dt - now_utc()).total_seconds()
     if remaining_seconds <= 0:
-        # expired: delete immediately
         keys_col.delete_one({"key": key})
         return jsonify({"ok": False, "msg": "Key expired", "remaining": "Expired"}), 410
 
-    remaining = remaining_string(expires_at)
-
+    
+    expires_at = doc.get("expires_at")
     stored_hwid = doc.get("hwid")
+    duration = doc.get("duration")
     if stored_hwid and stored_hwid != hwid:
-        # used by another hwid -- return remaining too
         return jsonify({"ok": False, "msg": "This key used by another hwid!", "remaining": remaining}), 403
-
-    # if not used before, bind hwid and optionally set name
+    if expires_at is None:
+        _, expires_ios = generate_key(duration)
+        update = {"$set": {"expires_at": expires_ios}}
+        keys_col.update_one({"key": key}, update)
     if not stored_hwid:
         update = {"$set": {"hwid": hwid, "used": True}}
         if name:
@@ -239,10 +239,9 @@ def api_check_key():
         display_name = name or doc.get("name", "Guest")
     else:
         display_name = doc.get("name", name) or "Guest"
+    remaining = remaining_string(expires_at)
+    return jsonify({"ok": True, "msg": f"welcome {display_name}", "remaining": remaining, "expires_at": expires_at}), 200
 
-    return jsonify({"ok": True, "msg": f"welcome {display_name}", "remaining": remaining}), 200
-
-# ---------- RUN ----------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
 
