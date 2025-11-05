@@ -202,19 +202,13 @@ def api_check_key():
     doc = keys_col.find_one({"key": key})
     if not doc:
         return jsonify({"ok": False, "msg": "Invalid key"}), 404
-
-    # نجيب المدة أولاً
-    duration = doc.get("duration", 30)  # مدة افتراضية مثلاً 30 يوم لو مافيه
-
+    duration = doc.get("duration", 30)
     expires_at = doc.get("expires_at")
-
-    # ✅ إذا المفتاح جديد وما فيه expires_at، أنشئ واحد جديد
     if not expires_at:
         _, expires_iso = generate_key(duration)
         keys_col.update_one({"key": key}, {"$set": {"expires_at": expires_iso}})
-        expires_at = expires_iso  # خزن القيمة بعد التحديث
+        expires_at = expires_iso
 
-    # نحاول نحولها لتاريخ
     try:
         exp_dt = parse_iso(expires_at)
     except Exception:
@@ -227,11 +221,9 @@ def api_check_key():
 
     stored_hwid = doc.get("hwid")
 
-    # ✅ تحقق من hwid (ما يحذف لو كان جديد)
     if stored_hwid and stored_hwid != hwid:
         return jsonify({"ok": False, "msg": "This key used by another hwid!"}), 403
 
-    # أول استخدام للمفتاح: خزّن HWID واسم المستخدم
     if not stored_hwid:
         update = {"$set": {"hwid": hwid, "used": True}}
         if name:
@@ -243,7 +235,7 @@ def api_check_key():
 
     return jsonify({
         "ok": True,
-        "msg": f"Welcome {display_name}",
+        "msg": f"welcome {display_name}",
         "expires_at": expires_at
     }), 200
 
