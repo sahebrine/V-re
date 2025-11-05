@@ -188,7 +188,6 @@ def api_reset_key():
     if res.matched_count == 0:
         return jsonify({"ok": False, "msg": "Key not found"}), 404
     return jsonify({"ok": True, "msg": "Reset successful"}), 200
-
 @app.route("/api/check_key", methods=["POST"])
 def api_check_key():
     cleanup_expired()
@@ -202,32 +201,37 @@ def api_check_key():
 
     doc = keys_col.find_one({"key": key})
     if not doc:
-        return jsonify({"ok": False, "msg": "invalid key"}), 404
+        return jsonify({"ok": False, "msg": "Invalid key"}), 404
+
+    # نجيب المدة أولاً
+    duration = doc.get("duration", 30)  # مدة افتراضية مثلاً 30 يوم لو مافيه
 
     expires_at = doc.get("expires_at")
+
+    # ✅ إذا المفتاح جديد وما فيه expires_at، أنشئ واحد جديد
     if not expires_at:
-        keys_col.delete_one({"key": key})
-        return jsonify({"ok": False, "msg": "invalid key"}), 404
-    if expires_at is None:
-        _, expires_ios = generate_key(duration)
-        update = {"$set": {"expires_at": expires_ios}}
-        keys_col.update_one({"key": key}, update)
+        _, expires_iso = generate_key(duration)
+        keys_col.update_one({"key": key}, {"$set": {"expires_at": expires_iso}})
+        expires_at = expires_iso  # خزن القيمة بعد التحديث
+
+    # نحاول نحولها لتاريخ
     try:
         exp_dt = parse_iso(expires_at)
     except Exception:
-        keys_col.delete_one({"key": key})
-        return jsonify({"ok": False, "msg": "invalid key"}), 404
+        return jsonify({"ok": False, "msg": "Corrupted key data"}), 400
 
     remaining_seconds = (exp_dt - now_utc()).total_seconds()
     if remaining_seconds <= 0:
         keys_col.delete_one({"key": key})
         return jsonify({"ok": False, "msg": "Key expired", "remaining": "Expired"}), 410
-    expires_at = doc.get("expires_at")
+
     stored_hwid = doc.get("hwid")
-    duration = doc.get("duration")
+
+    # ✅ تحقق من hwid (ما يحذف لو كان جديد)
     if stored_hwid and stored_hwid != hwid:
         return jsonify({"ok": False, "msg": "This key used by another hwid!"}), 403
-    
+
+    # أول استخدام للمفتاح: خزّن HWID واسم المستخدم
     if not stored_hwid:
         update = {"$set": {"hwid": hwid, "used": True}}
         if name:
@@ -236,7 +240,13 @@ def api_check_key():
         display_name = name or doc.get("name", "Guest")
     else:
         display_name = doc.get("name", name) or "Guest"
-    return jsonify({"ok": True, "msg": f"welcome {display_name}", "expires_at": expires_at}), 200
+
+    return jsonify({
+        "ok": True,
+        "msg": f"Welcome {display_name}",
+        "expires_at": expires_at
+    }), 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
