@@ -6,8 +6,6 @@ from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 import os
 import secrets
-
-# ---------- CONFIG ----------
 MONGO_URI = os.environ.get(
     "MONGO_URI",
     "mongodb+srv://sahebrine_db_user:7XlD1xWNVbFvACFh@cluster0.wemjued.mongodb.net/?retryWrites=true&w=majority"
@@ -16,14 +14,10 @@ DB_NAME = os.environ.get("DB_NAME", "sahebrine_db")
 COL_NAME = os.environ.get("COL_NAME", "vurekeys")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "change-me-to-secure-token")
 KEY_PREFIX = "VURE"
-
-# ---------- INIT ----------
 app = Flask(__name__)
 client = MongoClient(MONGO_URI, server_api=ServerApi("1"))
 db = client[DB_NAME]
 keys_col = db[COL_NAME]
-
-# ---------- HELPERS ----------
 def now_utc():
     return datetime.now(timezone.utc)
 
@@ -110,7 +104,6 @@ def generate_key(duration_str):
     key = f"{KEY_PREFIX}-{amount}{unit[0].upper()}-{suffix}"
     return key, iso(expires)
 
-# ---------- API ROUTES ----------
 
 @app.route("/api/add_key", methods=["POST"])
 def api_add_key():
